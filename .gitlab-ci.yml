@@ -1,0 +1,90 @@
+before_script:
+  - IMAGE_TAG="$(echo $CI_COMMIT_SHA | head -c 8)"
+stages:
+  - build
+  - deploy
+  - sonarqube
+  - restart-queue
+  - newrelic
+
+## AWS CI/CD
+build:
+  stage: build
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "development"'
+      variables:
+        TAGENV: dev
+        NEWRELICNAME: $NRNAME_DEV
+        REGISTRY: $WEBSRVSG_AWS
+        REG_URL: $ECRSG_URL
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      variables:
+        TAGENV: prd
+        NEWRELICNAME: $NRNAME_PRD
+        REGISTRY: $WEBSRVSG_AWS
+        REG_URL: $ECRHK_URL
+      when: manual
+  script:
+    - sed -i "s@REPLACE_WITH_REGISTRY_URL@${REGISTRY}@" ./Dockerfile
+    - sed -i "s/REPLACE_WITH_APP_NAME/${NEWRELICNAME}/" ./pre.sh
+    - echo "Building image..."
+    - docker build -t ${REG_URL}/${APPNAME}:${TAGENV} .
+    - echo "Tagging image..."
+    - docker tag ${REG_URL}/${APPNAME}:${TAGENV} ${REG_URL}/${APPNAME}:${IMAGE_TAG}
+    - echo "Pushing image..."
+    - docker push ${REG_URL}/${APPNAME}:${TAGENV}
+    - docker push ${REG_URL}/${APPNAME}:${IMAGE_TAG}
+  tags:
+  - m2-global
+
+deploy:
+  stage: deploy
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "development"'
+      variables:
+        TAGENV: DEV
+        ECSREGION: "ap-southeast-1"
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      variables:
+        TAGENV: PRD
+        ECSREGION: "ap-east-1 us-east-2"
+      when: manual
+  script:
+    - echo "Updating the service client ecs"
+    - for i in `echo $ECSREGION`; do aws ecs update-service --region "${i}" --cluster "Cluster${TAGENV}" --service "${SERVICE}-client"  --force-new-deployment; done
+  tags:
+  - m2-global
+
+restart_queue:
+  stage: restart-queue
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "development"'
+      variables:
+        TAGENV: DEV
+        ECSREGION: "ap-southeast-1"
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      variables:
+        TAGENV: PRD
+        ECSREGION: "ap-east-1 us-east-2"
+      when: manual
+  script:
+    - echo "Updating the service queue ecs"
+    - for i in `echo $ECSREGION`; do aws ecs update-service --region "${i}" --cluster "Cluster${TAGENV}" --service "${SERVICE}-queue"  --force-new-deployment; done
+  tags:
+  - m2-global
+
+newrelic_deployment:
+  stage: newrelic
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "development"'
+      variables:
+        TAGENV: DEV
+        NR_APPID: $nr_appid_dev
+    - if: '$CI_COMMIT_BRANCH == "master"'
+      variables:
+        TAGENV: PRD
+        NR_APPID: $nr_appid_prd
+  script:
+    - 'curl -X POST -H "X-Api-Key: ${NRKEY}" -H "Content-Type: application/json" -d "{\"deployment\":{ \"revision\": \"REVISION\", \"changelog\": \"Commit ID = $CI_COMMIT_SHORT_SHA\", \"description\": \"PIPELINE ID = $CI_PIPELINE_ID - $TAGENV \", \"user\": \"$GITLAB_USER_LOGIN\" }}" "https://api.newrelic.com/v2/applications/${NR_APPID}/deployments.json"'
+  tags:
+  - m2-global

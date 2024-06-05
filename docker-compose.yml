@@ -1,0 +1,35 @@
+version: "3.9"
+services:
+    spip:
+        build:
+            context: ./
+            dockerfile: "Dockerfile.${APP_ENV}"
+        container_name: "api-spip-${APP_ENV}"
+        volumes:
+            - .:/var/www/html
+            - ../storage:/var/www/html/storage/app
+        ports:
+            - "8080:8000"
+        links:
+            - redis
+    redis:
+        image: "redis:alpine"
+        restart: always
+        ports:
+            - '6388:6379'
+        volumes:
+            - cache:/data
+    phpredisadmin:
+        image: "erikdubbelboer/phpredisadmin"
+        environment:
+            - ADMIN_USER=admin
+            - ADMIN_PASS=admin
+            - REDIS_1_HOST=redis
+            - REDIS_1_PORT=6388
+        links:
+            - redis
+        ports:
+            - "8085:80"
+volumes:
+    cache:
+        driver: local
